@@ -31,10 +31,10 @@ interface Schedule {
   subjectId: string;
   teacherId: string;
   room: string;
-  days: string[]; // Now an array of days, e.g., ['Monday','Wednesday','Friday']
+  days: string[];
   startTime: string;
   endTime: string;
-  departmentId: string; // Derived from the subject
+  departmentId: string;
   createdAt: string;
   approved?: boolean;
 }
@@ -44,9 +44,14 @@ interface SubjectData {
   subjectCode: string;
   subjectName: string;
   departmentId: string;
+  courseId?: string;
+  fixedSchedule?: {
+    days: string[];
+    startTime: string;
+    endTime: string;
+  };
 }
 
-// New Department interface
 interface Department {
   id: string;
   name: string;
@@ -56,18 +61,23 @@ interface Department {
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const dayOptions = daysOfWeek.map(day => ({ value: day, label: day }));
 
-// FullCalendar localizer using moment
+// FullCalendar localizer using moment (ensure moment is configured as needed)
 const localizer = moment.locale('en');
 
 export default function ScheduleManagement({ role }: { role: Role }) {
-  // States for schedules, subjects, teachers, departments, etc.
+  // States for schedules, subjects, teachers, departments, courses (for cascading), etc.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [subjects, setSubjects] = useState<SubjectData[]>([]);
   const [teachers, setTeachers] = useState<any[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [courses, setCourses] = useState<any[]>([]); // Courses for the selected department
   const [loading, setLoading] = useState(true);
 
-  // Form state for creating a new schedule (using multi-select for days)
+  // Cascading selection states for subject selection
+  const [selectedDept, setSelectedDept] = useState<string>('');
+  const [selectedCourse, setSelectedCourse] = useState<string>('');
+
+  // Form state for creating a new schedule
   const [newSchedule, setNewSchedule] = useState({
     subjectId: '',
     teacherId: '',
@@ -76,7 +86,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     startTime: '',
     endTime: '',
   });
-  // State for editing a schedule
+  // State for editing a schedule (single schedule entry)
   const [editSchedule, setEditSchedule] = useState<Schedule | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
@@ -86,7 +96,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
   // For DataTable row selection
   const [selectedRows, setSelectedRows] = useState<Schedule[]>([]);
 
-  // --- Data Fetching ---
+  // --- Data Fetching on Mount ---
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -95,20 +105,17 @@ export default function ScheduleManagement({ role }: { role: Role }) {
         setSubjects(
           subjSnapshot.docs.map(d => ({ ...d.data(), id: d.id } as SubjectData))
         );
-
-        // Fetch teachers (filter by role 'teacher')
+        // Fetch teachers (users with role 'teacher')
         const teacherQuery = query(collection(db, 'users'), where('role', '==', 'teacher'));
         const teacherSnapshot = await getDocs(teacherQuery);
         setTeachers(
           teacherSnapshot.docs.map(d => ({ ...d.data(), id: d.id }))
         );
-
         // Fetch departments
         const deptSnapshot = await getDocs(collection(db, 'departments'));
         setDepartments(
           deptSnapshot.docs.map(d => ({ ...d.data(), id: d.id } as Department))
         );
-
         // Fetch schedules
         const scheduleSnapshot = await getDocs(collection(db, 'schedules'));
         setSchedules(
@@ -125,7 +132,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     }
   }, [role]);
 
-  // Real-time listener for schedules with 500ms delay
+  // Real-time listener for schedules with a slight 500ms delay
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'schedules'), (snapshot) => {
       setTimeout(() => {
@@ -135,13 +142,52 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     return () => unsubscribe();
   }, []);
 
+  // --- Cascading Subject Selection Handlers ---
+  const handleSelectedDeptChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const deptId = e.target.value;
+    setSelectedDept(deptId);
+    setSelectedCourse('');
+    setNewSchedule(prev => ({ ...prev, subjectId: '' }));
+    if (deptId) {
+      try {
+        const coursesSnapshot = await getDocs(collection(db, `departments/${deptId}/courses`));
+        setCourses(coursesSnapshot.docs.map(d => ({ ...d.data(), id: d.id })));
+      } catch (error) {
+        Swal.fire('Error', 'Failed to load courses', 'error');
+      }
+    } else {
+      setCourses([]);
+    }
+  };
+
+  const handleSelectedCourseChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const courseId = e.target.value;
+    setSelectedCourse(courseId);
+    setNewSchedule(prev => ({ ...prev, subjectId: '' }));
+  };
+
+  const handleSubjectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const subjectId = e.target.value;
+    setNewSchedule(prev => ({ ...prev, subjectId }));
+    const selectedSubject = subjects.find(sub => sub.id === subjectId);
+    const fixedSchedule = selectedSubject?.fixedSchedule;
+    if (fixedSchedule) {
+      setNewSchedule(prev => ({
+        ...prev,
+        days: fixedSchedule.days ?? [],
+        startTime: fixedSchedule.startTime,
+        endTime: fixedSchedule.endTime,
+      }));
+    }
+  };
+
   // --- Helper Functions ---
   const timeToMinutes = (timeStr: string): number => {
     const [hours, minutes] = timeStr.split(':').map(Number);
     return hours * 60 + minutes;
   };
 
-  // Conflict detection now iterates over each selected day
+  // Conflict detection: iterate over each selected day
   const hasConflict = (newSch: typeof newSchedule): boolean => {
     const newStart = timeToMinutes(newSch.startTime);
     const newEnd = timeToMinutes(newSch.endTime);
@@ -163,7 +209,8 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     return false;
   };
 
-  // Create schedule: derive departmentId from the selected subject
+  // --- Optimized Schedule Creation ---
+  // For each selected day, create a separate schedule entry.
   const handleCreateSchedule = async () => {
     const { subjectId, teacherId, room, days, startTime, endTime } = newSchedule;
     if (!subjectId || !teacherId || !room || days.length === 0 || !startTime || !endTime) {
@@ -178,34 +225,49 @@ export default function ScheduleManagement({ role }: { role: Role }) {
       Swal.fire('Warning', 'Schedule conflict detected (teacher or room already booked)', 'warning');
       return;
     }
-    // Look up subject to get its departmentId
     const subj = subjects.find(s => s.id === subjectId);
     if (!subj) {
       Swal.fire('Error', 'Selected subject not found', 'error');
       return;
     }
-    try {
-      const scheduleData: Schedule = {
-        ...newSchedule,
-        departmentId: subj.departmentId,
-        createdAt: new Date().toISOString(),
+    for (const day of days) {
+      const scheduleEntry = {
+        subjectId,
+        teacherId,
+        room,
+        days: [day], // Create an entry for this day
+        startTime,
+        endTime,
       };
-      await addDoc(collection(db, 'schedules'), scheduleData);
-      Swal.fire('Success', 'Schedule added successfully', 'success');
-      setNewSchedule({
-        subjectId: '',
-        teacherId: '',
-        room: '',
-        days: [],
-        startTime: '',
-        endTime: '',
-      });
-    } catch (error: any) {
-      Swal.fire('Error', 'Failed to add schedule', 'error');
+      if (hasConflict(scheduleEntry)) {
+        Swal.fire('Warning', `Conflict detected for ${day}. Skipping this day.`, 'warning');
+        continue;
+      }
+      try {
+        const scheduleData: Schedule = {
+          ...scheduleEntry,
+          departmentId: subj.departmentId,
+          createdAt: new Date().toISOString(),
+        };
+        await addDoc(collection(db, 'schedules'), scheduleData);
+      } catch (error: any) {
+        Swal.fire('Error', `Failed to add schedule for ${day}`, 'error');
+      }
     }
+    Swal.fire('Success', 'Schedule(s) added successfully', 'success');
+    setNewSchedule({
+      subjectId: '',
+      teacherId: '',
+      room: '',
+      days: [],
+      startTime: '',
+      endTime: '',
+    });
+    setSelectedDept('');
+    setSelectedCourse('');
+    setCourses([]);
   };
 
-  // Delete schedule
   const handleDeleteSchedule = async (scheduleId?: string) => {
     if (!scheduleId) return;
     const confirmResult = await Swal.fire({
@@ -225,20 +287,17 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     }
   };
 
-  // Open edit modal
   const openEditModal = (sch: Schedule) => {
     setEditSchedule(sch);
     setIsEditModalOpen(true);
   };
 
-  // Handle changes in edit modal
-  const handleEditChange = (field: string, value: string) => {
+  const handleEditChange = (field: string, value: string | string[]) => {
     if (editSchedule) {
       setEditSchedule({ ...editSchedule, [field]: value });
     }
   };
 
-  // Update schedule entry
   const handleUpdateSchedule = async () => {
     if (!editSchedule || !editSchedule.id) return;
     const { subjectId, teacherId, room, days, startTime, endTime } = editSchedule;
@@ -250,7 +309,6 @@ export default function ScheduleManagement({ role }: { role: Role }) {
       Swal.fire('Warning', 'Start time must be before end time', 'warning');
       return;
     }
-    // Check conflict excluding the edited schedule
     const otherSchedules = schedules.filter(sch => sch.id !== editSchedule.id);
     const newStart = timeToMinutes(startTime);
     const newEnd = timeToMinutes(endTime);
@@ -311,7 +369,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
         second: 0,
       });
       return {
-        id: sch.id, // Note: Multiple events may share the same id; FullCalendar can handle this if needed.
+        id: sch.id, // note: multiple events may share the same id
         title: `Sub: ${sch.subjectId} | Room: ${sch.room}`,
         start: eventStart.toDate(),
         end: eventEnd.toDate(),
@@ -336,11 +394,14 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     );
   });
 
-  // DataTable columns for schedule view; add a column for "Days"
+  // DataTable columns for schedule view
   const columns = [
     {
       name: 'Subject',
-      selector: (row: Schedule) => row.subjectId,
+      selector: (row: Schedule) => {
+        const subj = subjects.find(s => s.id === row.subjectId);
+        return subj ? subj.subjectName : row.subjectId;
+      },
       sortable: true,
     },
     {
@@ -406,7 +467,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
               return;
             }
             const grouped = filteredSchedules.reduce((acc: any, sch: Schedule) => {
-              const groupKey = `${sch.days} - ${sch.teacherId} - ${sch.room}`;
+              const groupKey = `${sch.days.join(', ')} - ${sch.teacherId} - ${sch.room}`;
               if (!acc[groupKey]) acc[groupKey] = [];
               acc[groupKey].push(sch);
               return acc;
@@ -450,68 +511,125 @@ export default function ScheduleManagement({ role }: { role: Role }) {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-      {/* Schedule Form */}
+      {/* Optimized Schedule Form */}
       <div className="bg-white rounded-xl p-6 shadow-lg">
         <h2 className="text-2xl font-bold text-primary mb-4">Add Schedule</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Cascading subject selection: Department -> Course -> Subject */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <select
+            value={selectedDept}
+            onChange={handleSelectedDeptChange}
+            className="p-3 border rounded-lg"
+          >
+            <option value="">Select Department</option>
+            {departments.map((dept) => (
+              <option key={dept.id} value={dept.id}>
+                {dept.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedCourse}
+            onChange={handleSelectedCourseChange}
+            disabled={!selectedDept}
+            className="p-3 border rounded-lg"
+          >
+            <option value="">Select Course</option>
+            {courses.map((course) => (
+              <option key={course.id} value={course.id}>
+                {course.name} ({course.code})
+              </option>
+            ))}
+          </select>
           <select
             value={newSchedule.subjectId}
-            onChange={(e) => setNewSchedule({ ...newSchedule, subjectId: e.target.value })}
+            onChange={handleSubjectChange}
+            disabled={!selectedDept || !selectedCourse}
             className="p-3 border rounded-lg"
           >
             <option value="">Select Subject</option>
-            {subjects.map((subj) => (
-              <option key={subj.id} value={subj.id}>
-                {subj.subjectName} ({subj.subjectCode})
-              </option>
-            ))}
+            {subjects
+              .filter(
+                (sub) =>
+                  sub.departmentId === selectedDept &&
+                  sub.courseId === selectedCourse
+              )
+              .map((sub) => (
+                <option key={sub.id} value={sub.id}>
+                  {sub.subjectName} ({sub.subjectCode})
+                </option>
+              ))}
           </select>
-          <select
-            value={newSchedule.teacherId}
-            onChange={(e) => setNewSchedule({ ...newSchedule, teacherId: e.target.value })}
-            className="p-3 border rounded-lg"
-          >
-            <option value="">Select Teacher</option>
-            {teachers.map((teacher) => (
-              <option key={teacher.id} value={teacher.id}>
-                {teacher.firstName} {teacher.lastName}
-              </option>
-            ))}
-          </select>
-          <input
-            type="text"
-            value={newSchedule.room}
-            onChange={(e) => setNewSchedule({ ...newSchedule, room: e.target.value })}
-            placeholder="Room"
-            className="p-3 border rounded-lg"
-          />
-          {/* Multi-select for Days using react-select */}
-          <Select
-            options={dayOptions}
-            isMulti
-            value={dayOptions.filter(option => newSchedule.days.includes(option.value))}
-            onChange={(selectedOptions: any) => {
-              const selectedDays = selectedOptions.map((option: { value: string }) => option.value);
-              setNewSchedule({ ...newSchedule, days: selectedDays });
-            }}
-            className="basic-multi-select"
-            classNamePrefix="select"
-          />
-          <input
-            type="time"
-            value={newSchedule.startTime}
-            onChange={(e) => setNewSchedule({ ...newSchedule, startTime: e.target.value })}
-            className="p-3 border rounded-lg"
-          />
-          <input
-            type="time"
-            value={newSchedule.endTime}
-            onChange={(e) => setNewSchedule({ ...newSchedule, endTime: e.target.value })}
-            className="p-3 border rounded-lg"
-          />
+        </div>
+        {/* Other schedule fields */}
+        <div className="grid grid-cols-1 gap-4">
+          {/* Teacher & Room in two columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <select
+              value={newSchedule.teacherId}
+              onChange={(e) =>
+                setNewSchedule({ ...newSchedule, teacherId: e.target.value })
+              }
+              className="p-3 border rounded-lg"
+            >
+              <option value="">Select Teacher</option>
+              {teachers.map((teacher) => (
+                <option key={teacher.id} value={teacher.id}>
+                  {teacher.firstName} {teacher.lastName}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              value={newSchedule.room}
+              onChange={(e) =>
+                setNewSchedule({ ...newSchedule, room: e.target.value })
+              }
+              placeholder="Room"
+              className="p-3 border rounded-lg"
+            />
+          </div>
+          {/* Days multi-select takes full width */}
+          <div>
+            <Select
+              isMulti
+              options={dayOptions}
+              value={dayOptions.filter((option) =>
+                newSchedule.days.includes(option.value)
+              )}
+              onChange={(selectedOptions: any) => {
+                const selectedDays = selectedOptions.map(
+                  (option: { value: string }) => option.value
+                );
+                setNewSchedule({ ...newSchedule, days: selectedDays });
+              }}
+              className="basic-multi-select"
+              classNamePrefix="select"
+              placeholder="Select Days"
+            />
+          </div>
+          {/* Time inputs in a separate row */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <input
+              type="time"
+              value={newSchedule.startTime}
+              onChange={(e) =>
+                setNewSchedule({ ...newSchedule, startTime: e.target.value })
+              }
+              className="p-3 border rounded-lg"
+            />
+            <input
+              type="time"
+              value={newSchedule.endTime}
+              onChange={(e) =>
+                setNewSchedule({ ...newSchedule, endTime: e.target.value })
+              }
+              className="p-3 border rounded-lg"
+            />
+          </div>
           <button
             onClick={handleCreateSchedule}
-            className="col-span-1 md:col-span-2 bg-primary text-white px-6 py-3 rounded-lg hover:bg-accent-blue transition-colors"
+            className="w-full bg-primary text-white px-6 py-3 rounded-lg hover:bg-accent-blue transition-colors"
           >
             Add Schedule
           </button>
@@ -571,7 +689,9 @@ export default function ScheduleManagement({ role }: { role: Role }) {
           responsive
           highlightOnHover
           selectableRows
-          onSelectedRowsChange={(state: { selectedRows: Schedule[] }) => setSelectedRows(state.selectedRows)}
+          onSelectedRowsChange={(state: { selectedRows: Schedule[] }) =>
+            setSelectedRows(state.selectedRows)
+          }
           subHeader
           subHeaderComponent={<SubHeaderComponent />}
           customStyles={{
@@ -603,11 +723,13 @@ export default function ScheduleManagement({ role }: { role: Role }) {
                   className="p-3 border rounded-lg"
                 >
                   <option value="">Select Subject</option>
-                  {subjects.map((subj) => (
-                    <option key={subj.id} value={subj.id}>
-                      {subj.subjectName} ({subj.subjectCode})
-                    </option>
-                  ))}
+                  {subjects
+                    .filter(sub => sub.departmentId === selectedDept && sub.courseId === selectedCourse)
+                    .map((subj) => (
+                      <option key={subj.id} value={subj.id}>
+                        {subj.subjectName} ({subj.subjectCode})
+                      </option>
+                    ))}
                 </select>
                 <select
                   value={editSchedule.teacherId}
@@ -628,10 +750,9 @@ export default function ScheduleManagement({ role }: { role: Role }) {
                   placeholder="Room"
                   className="p-3 border rounded-lg"
                 />
-                {/* Multi-select for days in edit modal */}
                 <Select
-                  options={dayOptions}
                   isMulti
+                  options={dayOptions}
                   value={dayOptions.filter(option => editSchedule.days.includes(option.value))}
                   onChange={(selectedOptions: any) => {
                     const selectedDays = selectedOptions.map((option: { value: string }) => option.value);
@@ -654,15 +775,24 @@ export default function ScheduleManagement({ role }: { role: Role }) {
                 />
               </div>
               <div className="flex justify-end mt-6 gap-4">
-                <button onClick={() => { setIsEditModalOpen(false); setEditSchedule(null); }} className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors">
+                <button
+                  onClick={() => { setIsEditModalOpen(false); setEditSchedule(null); }}
+                  className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors"
+                >
                   Cancel
                 </button>
-                <button onClick={handleUpdateSchedule} className="bg-primary hover:bg-accent-blue text-white px-4 py-2 rounded-lg transition-colors">
+                <button
+                  onClick={handleUpdateSchedule}
+                  className="bg-primary hover:bg-accent-blue text-white px-4 py-2 rounded-lg transition-colors"
+                >
                   Save
                 </button>
               </div>
               <div className="mt-4">
-                <button onClick={() => handleDeleteSchedule(editSchedule.id)} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition-colors">
+                <button
+                  onClick={() => handleDeleteSchedule(editSchedule.id)}
+                  className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition-colors"
+                >
                   Delete Schedule
                 </button>
               </div>

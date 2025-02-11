@@ -9,6 +9,7 @@ import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import DashboardLayout from '@/components/DashboardLayout';
+import CalendarManagement from '@/components/CalendarManagement';
 
 export default function DashboardPage() {
   const { role, loading } = useUserRole();
@@ -45,6 +46,7 @@ export default function DashboardPage() {
         {activeTab === 'users' && <UserManagement currentUserRole={role} />}
         {activeTab === 'subjects' && <SubjectManagement role={role} />}
         {activeTab === 'schedule' && <ScheduleManagement role={role} />}
+        {activeTab === 'calendar' && <CalendarManagement currentUser={{ role }}/>}
       </motion.div>
     </DashboardLayout>
   );
