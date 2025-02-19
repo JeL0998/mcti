@@ -47,7 +47,7 @@ interface User {
   createdAt: string;
 }
 
-export default function UserManagement({ currentUserRole }: { currentUserRole: Role }) {
+export default function UserManagement({ currentUserRole, currentUserDepartment }: { currentUserRole: Role, currentUserDepartment: string }) {
   // State variables
   const [users, setUsers] = useState<User[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
@@ -220,7 +220,7 @@ export default function UserManagement({ currentUserRole }: { currentUserRole: R
   // Filter users based on filterDepartment and filterRole
   const filteredUsers = users.filter(user => {
     return (!filterDepartment || user.departmentId === filterDepartment) &&
-           (!filterRole || user.role === filterRole);
+      (!filterRole || user.role === filterRole);
   });
 
   // DataTable columns definition for user management
@@ -454,18 +454,38 @@ export default function UserManagement({ currentUserRole }: { currentUserRole: R
             ))}
           </select>
           {(newUser.role === 'dept_head' || newUser.role === 'teacher') && (
-            <select
-              value={newUser.departmentId}
-              onChange={(e) => setNewUser({ ...newUser, departmentId: e.target.value })}
-              className="w-full p-3 border rounded-lg"
-            >
-              <option value="">Select Department</option>
-              {departments.map((dept) => (
-                <option key={dept.id} value={dept.id}>
-                  {dept.name}
-                </option>
-              ))}
-            </select>
+            <>
+              {currentUserRole === 'dept_head' ? (
+                // If the logged-in user is a department head, lock the department selection
+                <select
+                  value={currentUserDepartment}
+                  disabled
+                  className="w-full p-3 border rounded-lg"
+                >
+                  <option value={currentUserDepartment}>
+                    {currentUserDepartment === 'non_board_courses'
+                      ? 'Non Board Courses'
+                      : 'Board Courses'}
+                  </option>
+                </select>
+              ) : (
+                // Otherwise, allow selection from all departments
+                <select
+                  value={newUser.departmentId}
+                  onChange={(e) =>
+                    setNewUser({ ...newUser, departmentId: e.target.value })
+                  }
+                  className="w-full p-3 border rounded-lg"
+                >
+                  <option value="">Select Department</option>
+                  {departments.map((dept) => (
+                    <option key={dept.id} value={dept.id}>
+                      {dept.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </>
           )}
           <button
             onClick={handleCreateUser}
@@ -578,18 +598,34 @@ export default function UserManagement({ currentUserRole }: { currentUserRole: R
                   ))}
                 </select>
                 {(editUser.role === 'dept_head' || editUser.role === 'teacher') && (
-                  <select
-                    value={editUser.departmentId || ''}
-                    onChange={(e) => handleEditUserChange('departmentId', e.target.value)}
-                    className="w-full p-3 border rounded-lg"
-                  >
-                    <option value="">Select Department</option>
-                    {departments.map((dept) => (
-                      <option key={dept.id} value={dept.id}>
-                        {dept.name}
-                      </option>
-                    ))}
-                  </select>
+                  <>
+                    {currentUserRole === 'dept_head' ? (
+                      <select
+                        value={currentUserDepartment}
+                        disabled
+                        className="w-full p-3 border rounded-lg"
+                      >
+                        <option value={currentUserDepartment}>
+                          {currentUserDepartment === 'non_board_courses'
+                            ? 'Non Board Courses'
+                            : 'Board Courses'}
+                        </option>
+                      </select>
+                    ) : (
+                      <select
+                        value={editUser.departmentId || ''}
+                        onChange={(e) => handleEditUserChange('departmentId', e.target.value)}
+                        className="w-full p-3 border rounded-lg"
+                      >
+                        <option value="">Select Department</option>
+                        {departments.map((dept) => (
+                          <option key={dept.id} value={dept.id}>
+                            {dept.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </>
                 )}
               </div>
               <div className="flex justify-end mt-6 gap-4">

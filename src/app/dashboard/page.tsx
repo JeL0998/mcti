@@ -5,6 +5,7 @@ import { useUserRole } from '@/hooks/useUserRole';
 import UserManagement from '@/components/UserManagement';
 import SubjectManagement from '@/components/SubjectManagement';
 import ScheduleManagement from '@/components/ScheduleManagement';
+import ApproveScheduleManagement from '@/components/ApproveScheduleManagement';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -12,12 +13,16 @@ import DashboardLayout from '@/components/DashboardLayout';
 import CalendarManagement from '@/components/CalendarManagement';
 
 export default function DashboardPage() {
-  const { role, loading } = useUserRole();
+  // Assume useUserRole returns role, departmentId, userId and loading.
+  const { role, departmentId, userId, loading } = useUserRole();
   const [activeTab, setActiveTab] = useState('schedule');
   const router = useRouter();
 
   useEffect(() => {
     if (!loading && !role) router.push('/');
+    if (!loading && role === 'teacher') {
+      setActiveTab('approve');
+    }
   }, [role, loading, router]);
 
   if (loading || !role) {
@@ -43,10 +48,21 @@ export default function DashboardPage() {
         animate={{ opacity: 1, y: 0 }} 
         transition={{ duration: 0.4, ease: 'easeOut' }}
       >
-        {activeTab === 'users' && <UserManagement currentUserRole={role} />}
-        {activeTab === 'subjects' && <SubjectManagement role={role} />}
-        {activeTab === 'schedule' && <ScheduleManagement role={role} />}
-        {activeTab === 'calendar' && <CalendarManagement currentUser={{ role }}/>}
+        {activeTab === 'users' && (
+          <UserManagement currentUserRole={role} currentUserDepartment={departmentId ?? ''} />
+        )}
+        {activeTab === 'subjects' && (
+          <SubjectManagement currentUserRole={role} currentUserDepartment={departmentId ?? ''} />
+        )}
+        {activeTab === 'schedule' && (
+          <ScheduleManagement currentUserRole={role} currentUserDepartment={departmentId ?? ''} />
+        )}
+        {activeTab === 'approve' && role === 'teacher' && userId && (
+          <ApproveScheduleManagement currentUserRole={role} currentUserId={userId ?? ''} />
+        )}
+        {activeTab === 'calendar' && (
+          <CalendarManagement currentUser={{ role }}/>
+        )}
       </motion.div>
     </DashboardLayout>
   );

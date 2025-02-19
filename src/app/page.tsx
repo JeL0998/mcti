@@ -54,7 +54,7 @@ export default function LoginPage() {
         throw new Error('User not found');
       }
       const userDoc = querySnapshot.docs[0];
-      const userData = userDoc.data();
+      const userData = { ...userDoc.data() as { password: string }, userId: userDoc.id };
 
       // Compare the provided password with the hashed password stored in Firestore
       const isMatch = await bcrypt.compare(password, userData.password);

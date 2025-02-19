@@ -32,7 +32,13 @@ interface Subject {
   createdAt: string;
 }
 
-export default function SubjectManagement({ role }: { role: Role }) {
+export default function SubjectManagement({
+  currentUserRole,
+  currentUserDepartment,
+}: {
+  currentUserRole: Role;
+  currentUserDepartment?: string;
+}) {
   // States for subject management
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
@@ -113,6 +119,23 @@ export default function SubjectManagement({ role }: { role: Role }) {
     else setCourses([]);
   };
 
+  // If the logged-in user is a department head, lock the department selection in the create form.
+  useEffect(() => {
+    if (currentUserRole === 'dept_head' && currentUserDepartment) {
+      setSelectedDepartment(currentUserDepartment);
+      setNewSubject(prev => ({ ...prev, departmentId: currentUserDepartment }));
+      const fetchCourses = async () => {
+        try {
+          const coursesSnapshot = await getDocs(collection(db, `departments/${currentUserDepartment}/courses`));
+          setCourses(coursesSnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (error) {
+          Swal.fire('Error', 'Failed to load courses', 'error');
+        }
+      };
+      fetchCourses();
+    }
+  }, [currentUserRole, currentUserDepartment]);
+
   // Real-time listener for subjects with a 500ms delay for smoother updates
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'subjects'), (snapshot) => {
@@ -164,8 +187,11 @@ export default function SubjectManagement({ role }: { role: Role }) {
         departmentId: '',
         courseId: '',
       });
-      setSelectedDepartment('');
-      setCourses([]);
+      // If not dept head, reset department selection; otherwise it remains locked.
+      if (currentUserRole !== 'dept_head') {
+        setSelectedDepartment('');
+        setCourses([]);
+      }
     } catch (error: any) {
       Swal.fire('Error', 'Failed to create subject', 'error');
     }
@@ -340,17 +366,15 @@ export default function SubjectManagement({ role }: { role: Role }) {
       Swal.fire('Info', 'No subjects to export', 'info');
       return;
     }
-    // Group subjects by yearLevel, then semester, then course
     const grouped = filteredSubjects.reduce((acc: any, subject: Subject) => {
       const groupKey = `${subject.yearLevel} - ${subject.semester} - ${getCourseName(subject.courseId)}`;
       if (!acc[groupKey]) acc[groupKey] = [];
       acc[groupKey].push(subject);
       return acc;
     }, {});
-    // Create a workbook with each group as a separate sheet
     const workbook = XLSX.utils.book_new();
     Object.keys(grouped).forEach(groupKey => {
-      const data = grouped[groupKey].map((sub: { subjectCode: any; subjectName: any; yearLevel: any; semester: any; courseId: string; createdAt: any; }) => ({
+      const data = grouped[groupKey].map((sub: Subject) => ({
         'Subject Code': sub.subjectCode,
         'Subject Name': sub.subjectName,
         'Year Level': sub.yearLevel,
@@ -359,7 +383,6 @@ export default function SubjectManagement({ role }: { role: Role }) {
         'Created At': sub.createdAt,
       }));
       const worksheet = XLSX.utils.json_to_sheet(data);
-      // Limit sheet name to 31 characters
       XLSX.utils.book_append_sheet(workbook, worksheet, groupKey.substring(0, 31));
     });
     XLSX.writeFile(workbook, 'subjects_export.xlsx');
@@ -378,9 +401,7 @@ export default function SubjectManagement({ role }: { role: Role }) {
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
       const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet);
-      // For each row in the imported data, create a subject
       for (const row of jsonData) {
-        // Validate required fields exist in row
         if (
           row['Subject Code'] &&
           row['Subject Name'] &&
@@ -390,7 +411,6 @@ export default function SubjectManagement({ role }: { role: Role }) {
           row['Department'] &&
           row['Course']
         ) {
-          // Find department and course id based on names (assumes unique names)
           const dept = departments.find(d => d.name === row['Department']);
           const course = allCourses.find(c => c.name === row['Course']);
           if (dept && course) {
@@ -413,7 +433,7 @@ export default function SubjectManagement({ role }: { role: Role }) {
     input.click();
   };
 
-  if (!ROLES[role]?.canManageSubjects) {
+  if (!ROLES[currentUserRole]?.canManageSubjects) {
     return (
       <div className="p-6 bg-white rounded-xl shadow-lg">
         <h3 className="text-red-500">You don't have permission to manage subjects</h3>
@@ -463,16 +483,24 @@ export default function SubjectManagement({ role }: { role: Role }) {
             className="w-full p-3 border rounded-lg"
           />
           {/* Department Dropdown */}
-          <select
-            value={newSubject.departmentId}
-            onChange={(e) => handleDepartmentChange(e.target.value)}
-            className="w-full p-3 border rounded-lg"
-          >
-            <option value="">Select Department</option>
-            {departments.map(dept => (
-              <option key={dept.id} value={dept.id}>{dept.name}</option>
-            ))}
-          </select>
+          {currentUserRole === 'dept_head' && currentUserDepartment ? (
+            <select value={currentUserDepartment} disabled className="w-full p-3 border rounded-lg">
+              <option value={currentUserDepartment}>
+                {currentUserDepartment === 'non_board_courses' ? 'Non Board Courses' : 'Board Courses'}
+              </option>
+            </select>
+          ) : (
+            <select
+              value={newSubject.departmentId}
+              onChange={(e) => handleDepartmentChange(e.target.value)}
+              className="w-full p-3 border rounded-lg"
+            >
+              <option value="">Select Department</option>
+              {departments.map(dept => (
+                <option key={dept.id} value={dept.id}>{dept.name}</option>
+              ))}
+            </select>
+          )}
           {/* Course Dropdown (for create form) */}
           <select
             value={newSubject.courseId}
@@ -499,16 +527,24 @@ export default function SubjectManagement({ role }: { role: Role }) {
       {/* Filter Section */}
       <div className="bg-white rounded-xl p-6 shadow-lg flex flex-wrap gap-4 items-center">
         <h3 className="text-xl font-semibold text-primary">Filter Subjects:</h3>
-        <select
-          value={filterDepartment}
-          onChange={(e) => { setFilterDepartment(e.target.value); setFilterCourse(''); }}
-          className="p-2 border rounded"
-        >
-          <option value="">All Departments</option>
-          {departments.map(dept => (
-            <option key={dept.id} value={dept.id}>{dept.name}</option>
-          ))}
-        </select>
+        {currentUserRole === 'dept_head' && currentUserDepartment ? (
+          <select value={currentUserDepartment} disabled className="p-2 border rounded">
+            <option value={currentUserDepartment}>
+              {currentUserDepartment === 'non_board_courses' ? 'Non Board Courses' : 'Board Courses'}
+            </option>
+          </select>
+        ) : (
+          <select
+            value={filterDepartment}
+            onChange={(e) => { setFilterDepartment(e.target.value); setFilterCourse(''); }}
+            className="p-2 border rounded"
+          >
+            <option value="">All Departments</option>
+            {departments.map(dept => (
+              <option key={dept.id} value={dept.id}>{dept.name}</option>
+            ))}
+          </select>
+        )}
         <select
           value={filterCourse}
           onChange={(e) => setFilterCourse(e.target.value)}
@@ -542,7 +578,7 @@ export default function SubjectManagement({ role }: { role: Role }) {
             headCells: {
               style: {
                 fontWeight: 'bold',
-                backgroundColor: '#f3f4f6', // Tailwind gray-100
+                backgroundColor: '#f3f4f6',
               },
             },
           }}
@@ -596,16 +632,24 @@ export default function SubjectManagement({ role }: { role: Role }) {
                   placeholder="Semester"
                   className="w-full p-3 border rounded-lg"
                 />
-                <select
-                  value={editSubject.departmentId || ''}
-                  onChange={(e) => handleEditChange('departmentId', e.target.value)}
-                  className="w-full p-3 border rounded-lg"
-                >
-                  <option value="">Select Department</option>
-                  {departments.map(dept => (
-                    <option key={dept.id} value={dept.id}>{dept.name}</option>
-                  ))}
-                </select>
+                {currentUserRole === 'dept_head' && currentUserDepartment ? (
+                  <select value={currentUserDepartment} disabled className="w-full p-3 border rounded-lg">
+                    <option value={currentUserDepartment}>
+                      {currentUserDepartment === 'non_board_courses' ? 'Non Board Courses' : 'Board Courses'}
+                    </option>
+                  </select>
+                ) : (
+                  <select
+                    value={editSubject.departmentId || ''}
+                    onChange={(e) => handleEditChange('departmentId', e.target.value)}
+                    className="w-full p-3 border rounded-lg"
+                  >
+                    <option value="">Select Department</option>
+                    {departments.map(dept => (
+                      <option key={dept.id} value={dept.id}>{dept.name}</option>
+                    ))}
+                  </select>
+                )}
                 <select
                   value={editSubject.courseId || ''}
                   onChange={(e) => handleEditChange('courseId', e.target.value)}

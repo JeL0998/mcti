@@ -6,7 +6,7 @@ import { ROLES, Role } from '@/utils/roles';
 import { auth } from '@/utils/firebase';
 import Image from 'next/image';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBars, faXmark, faCalendar, faUsers, faBook, faCog } from '@fortawesome/free-solid-svg-icons';
+import { faBars, faXmark, faCalendar, faUsers, faBook, faCog, faCheckCircle } from '@fortawesome/free-solid-svg-icons';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -18,6 +18,7 @@ interface DashboardLayoutProps {
 /** Map labels to actual permission keys */
 const permissionKeys: Record<string, keyof typeof ROLES[Role]> = {
   Schedule: 'canManageSchedule',
+  Approve: 'canApproveSchedule',
   Users: 'canManageUsers',
   Subjects: 'canManageSubjects',
   Calendar: 'canManageCalendar',
@@ -25,6 +26,7 @@ const permissionKeys: Record<string, keyof typeof ROLES[Role]> = {
 
 const navItems = [
   { id: 'schedule', icon: faCalendar, label: 'Schedule' },
+  { id: 'approve', icon: faCheckCircle, label: 'Approve' },
   { id: 'users', icon: faUsers, label: 'Users' },
   { id: 'subjects', icon: faBook, label: 'Subjects' },
   { id: 'calendar', icon: faCog, label: 'Calendar' },

@@ -1,5 +1,3 @@
-// utils/roles.ts
-
 export type Role = 'admin' | 'registrar' | 'dept_head' | 'teacher';
 
 interface RolePermissions {
@@ -9,14 +7,14 @@ interface RolePermissions {
   canManageSchedule: boolean;
   canManageCalendar: boolean;
   canApproveSchedule: boolean;
-  restrictedRoles?: string[]; // Optional property
-  allowedRoles?: string[];    // Optional property
+  restrictedRoles?: string[];
+  allowedRoles?: string[];
 }
 
-export const getUserRoleOptions = (currentUserRole: Role) => {
+export const getUserRoleOptions = (currentUserRole: Role, currentUserDept?: string) => {
   const options: Role[] = [];
-  
-  switch(currentUserRole) {
+
+  switch (currentUserRole) {
     case 'admin':
       return Object.keys(ROLES) as Role[];
     case 'registrar':
@@ -28,10 +26,15 @@ export const getUserRoleOptions = (currentUserRole: Role) => {
   }
 };
 
-export const canEditUser = (currentUserRole: Role, targetUserRole: Role) => {
+export const canEditUser = (currentUserRole: Role, targetUserRole: Role, currentUserDept?: string, targetUserDept?: string) => {
   if (currentUserRole === 'admin') return true;
   if (currentUserRole === 'registrar' && targetUserRole !== 'admin') return true;
-  if (currentUserRole === 'dept_head' && targetUserRole === 'teacher') return true;
+  
+  if (currentUserRole === 'dept_head') {
+    // Dept head can only manage teachers in their department
+    return targetUserRole === 'teacher' && currentUserDept === targetUserDept;
+  }
+
   return false;
 };
 
@@ -42,7 +45,7 @@ export const ROLES: Record<Role, RolePermissions> = {
     canManageSubjects: true,
     canManageSchedule: true,
     canManageCalendar: true,
-    canApproveSchedule: true,
+    canApproveSchedule: false,
   },
   registrar: {
     canManageUsers: true,
@@ -50,7 +53,7 @@ export const ROLES: Record<Role, RolePermissions> = {
     canManageSubjects: true,
     canManageSchedule: true,
     canManageCalendar: true,
-    canApproveSchedule: true,
+    canApproveSchedule: false,
     restrictedRoles: ['admin'], // Cannot manage admin accounts
   },
   dept_head: {
@@ -59,15 +62,15 @@ export const ROLES: Record<Role, RolePermissions> = {
     canManageSubjects: true,
     canManageSchedule: true,
     canManageCalendar: false,
-    canApproveSchedule: true,
+    canApproveSchedule: false,
     allowedRoles: ['teacher'], // Can only manage teachers
   },
   teacher: {
     canManageUsers: false,
     canManageAllDepartments: false,
-    canManageSubjects: false,
+    canManageSubjects: true,
     canManageSchedule: false,
-    canManageCalendar: false,
+    canManageCalendar: true,
     canApproveSchedule: true,
   },
 };

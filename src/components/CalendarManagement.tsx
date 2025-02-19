@@ -26,10 +26,10 @@ import { faEdit, faTrash, faFileExport } from '@fortawesome/free-solid-svg-icons
 interface CalendarEvent {
   id?: string;
   title: string;
-  date: string;       // e.g., "2023-06-15"
+  date: string;         // e.g., "2023-06-15"
   fullDay: boolean;
-  startTime?: string; // if half-day, e.g., "08:00"
-  endTime?: string;   // if half-day, e.g., "12:00"
+  startTime?: string;   // if half-day, e.g., "08:00"
+  endTime?: string;     // if half-day, e.g., "12:00"
   departmentId: string; // "all" for global events, or a department id
   createdAt: string;
   createdBy: string;
@@ -46,25 +46,13 @@ export interface Department {
   [key: string]: any;
 }
 
-// We'll use FullCalendar's built-in month view ("dayGridMonth")
-const calendarOptions = {
-  plugins: [dayGridPlugin, timeGridPlugin, interactionPlugin],
-  initialView: 'dayGridMonth',
-  headerToolbar: {
-    left: 'prev,next today',
-    center: 'title',
-    right: '',
-  },
-  height: 600,
-};
-
 export default function CalendarManagement({ currentUser }: { currentUser: CurrentUser }) {
   // States
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Modal states for adding/editing events
+  // Modal states for adding/editing events (only allowed for admin/registrar/dept_head)
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
   const [eventForm, setEventForm] = useState({
@@ -76,25 +64,27 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
     departmentId: currentUser.role === 'dept_head' ? (currentUser.departmentId || '') : 'all',
   });
 
-  // Filter events for teachers: if role is teacher, only show events that are global (departmentId "all" or empty)
-  // or events for their own department.
-  const filterEvents = (ev: CalendarEvent) => {
-    if (currentUser.role === 'teacher') {
-      return ev.departmentId === 'all' || ev.departmentId === '' || ev.departmentId === currentUser.departmentId;
-    } else if (currentUser.role === 'dept_head') {
-      // Dept heads see global events plus events for their department.
-      return ev.departmentId === 'all' || ev.departmentId === '' || ev.departmentId === currentUser.departmentId;
-    }
-    return true;
-  };
+  // For the DataTable row selection
+  const [selectedRows, setSelectedRows] = useState<CalendarEvent[]>([]);
 
-  // Fetch departments and calendar events on mount
+  // --- 1) Permission Checks ---
+  if (!ROLES[currentUser.role]?.canManageCalendar && currentUser.role !== 'teacher') {
+    return (
+      <div className="p-6 bg-white rounded-xl shadow-lg">
+        <h3 className="text-red-500">You don't have permission to manage the calendar</h3>
+      </div>
+    );
+  }
+
+  // --- 2) Data Fetching ---
   useEffect(() => {
     const fetchData = async () => {
       try {
         // Fetch departments
         const deptSnapshot = await getDocs(collection(db, 'departments'));
-        setDepartments(deptSnapshot.docs.map(d => ({ ...d.data(), id: d.id })) as Department[]);
+        setDepartments(
+          deptSnapshot.docs.map(d => ({ ...d.data(), id: d.id })) as Department[]
+        );
 
         // Fetch calendar events
         const eventSnapshot = await getDocs(collection(db, 'calendar'));
@@ -102,17 +92,14 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
           eventSnapshot.docs.map(d => ({ ...d.data(), id: d.id })) as CalendarEvent[]
         );
       } catch (error) {
+        console.error('Error loading calendar data:', error);
         Swal.fire('Error', 'Failed to load calendar data', 'error');
       }
       setLoading(false);
     };
 
-    if (ROLES[currentUser.role]?.canManageCalendar) {
-      fetchData();
-    } else {
-      // For teachers, we still load events for viewing
-      fetchData();
-    }
+    // Load events for all roles (teachers will only view)
+    fetchData();
   }, [currentUser]);
 
   // Real-time listener for calendar events with slight delay
@@ -125,12 +112,27 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
     return () => unsubscribe();
   }, []);
 
-  // Helper: Create a FullCalendar event object from a CalendarEvent
+  // --- 3) Filtering logic ---
+  const filterEvents = (ev: CalendarEvent) => {
+    if (currentUser.role === 'teacher') {
+      // Teachers see only global or events in their department
+      return ev.departmentId === 'all' || ev.departmentId === currentUser.departmentId;
+    }
+    if (currentUser.role === 'dept_head') {
+      return ev.departmentId === 'all' || ev.departmentId === currentUser.departmentId;
+    }
+    // Admin/registrar see all
+    return true;
+  };
+
+  const filteredEvents = events.filter(filterEvents);
+
+  // --- 4) FullCalendar Setup ---
   const getCalendarEvent = (ev: CalendarEvent) => {
-    const eventStart = new Date(ev.date + (ev.fullDay ? '' : 'T' + (ev.startTime || '00:00') + ':00'));
+    const eventStart = new Date(ev.date + (ev.fullDay ? '' : 'T' + (ev.startTime || '00:00')));
     const eventEnd = ev.fullDay
       ? new Date(ev.date + 'T23:59:59')
-      : new Date(ev.date + 'T' + (ev.endTime || '00:00') + ':00');
+      : new Date(ev.date + 'T' + (ev.endTime || '00:00'));
     return {
       id: ev.id,
       title: ev.title,
@@ -141,29 +143,12 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
     };
   };
 
-  const calendarEvents = events.filter(filterEvents).map(getCalendarEvent);
+  const calendarEvents = filteredEvents.map(getCalendarEvent);
 
-  // Open modal for adding a new event (if user has permission)
-  const handleDateClick = (arg: { dateStr: string }) => {
-    // Only allow add if currentUser is admin, registrar, or dept head
-    if (currentUser.role === 'teacher') return;
-    setEventForm({
-      title: '',
-      date: arg.dateStr,
-      fullDay: true,
-      startTime: '',
-      endTime: '',
-      departmentId: currentUser.role === 'dept_head' ? (currentUser.departmentId || '') : 'all',
-    });
-    setEditingEvent(null);
-    setIsModalOpen(true);
-  };
-
-  // When an event is clicked, open modal for editing (if permitted)
   const handleEventClick = (info: any) => {
-    const ev: CalendarEvent = info.event.extendedProps.ev;
-    // For teachers, we do not allow editing
+    // Teachers are only allowed to view; only non-teachers can edit via calendar
     if (currentUser.role === 'teacher') return;
+    const ev: CalendarEvent = info.event.extendedProps.ev;
     setEditingEvent(ev);
     setEventForm({
       title: ev.title,
@@ -176,103 +161,113 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
     setIsModalOpen(true);
   };
 
+  // Click on empty date to add event (only allowed if not teacher)
+  const handleDateClick = (arg: { dateStr: string }) => {
+    if (currentUser.role === 'teacher') return;
+    setEditingEvent(null);
+    setEventForm({
+      title: '',
+      date: arg.dateStr,
+      fullDay: true,
+      startTime: '',
+      endTime: '',
+      departmentId:
+        currentUser.role === 'dept_head'
+          ? currentUser.departmentId || ''
+          : 'all',
+    });
+    setIsModalOpen(true);
+  };
+
+  // --- 5) Event Form Logic ---
+  const handleFormChange = (field: string, value: any) => {
+    setEventForm(prev => ({ ...prev, [field]: value }));
+  };
+
   const timeToMinutes = (time: string): number => {
     const [hours, minutes] = time.split(':').map(Number);
     return hours * 60 + minutes;
   };
 
-  // Handle form changes
-  const handleFormChange = (field: string, value: any) => {
-    setEventForm(prev => ({ ...prev, [field]: value }));
-  };
-
-  // Save (create or update) an event
   const handleSaveEvent = async () => {
     const { title, date, fullDay, startTime, endTime, departmentId } = eventForm;
     if (!title || !date) {
+      console.log('Validation error: Title and date are required');
       Swal.fire('Warning', 'Title and date are required', 'warning');
       return;
     }
     if (!fullDay && (!startTime || !endTime)) {
+      console.log('Validation error: Half-day events require start and end times');
       Swal.fire('Warning', 'Please fill start and end time for half-day events', 'warning');
       return;
     }
-    // For half-day events, ensure start < end
     if (!fullDay && timeToMinutes(startTime) >= timeToMinutes(endTime)) {
+      console.log('Validation error: Start time must be before end time');
       Swal.fire('Warning', 'Start time must be before end time', 'warning');
       return;
     }
-    // For dept head, force department to be their own
-    const eventDept = currentUser.role === 'dept_head' ? currentUser.departmentId || '' : departmentId;
+    // For dept head, force department
+    const eventDept =
+      currentUser.role === 'dept_head' ? currentUser.departmentId || '' : departmentId;
+
     const eventData: CalendarEvent = {
       title,
       date,
       fullDay,
-      startTime: fullDay ? undefined : startTime,
-      endTime: fullDay ? undefined : endTime,
+      startTime: fullDay ? '08:00' : startTime,
+      endTime: fullDay ? '17:00' : endTime,
       departmentId: eventDept,
       createdAt: new Date().toISOString(),
-      createdBy: currentUser.role, // You might want to use the actual uid instead
+      createdBy: currentUser.role,
     };
+
     try {
       if (editingEvent && editingEvent.id) {
-        // Update
         await updateDoc(doc(db, 'calendar', editingEvent.id), { ...eventData });
+        console.log('Event updated:', eventData);
         Swal.fire('Success', 'Event updated successfully', 'success');
       } else {
-        // Create new event
-        await addDoc(collection(db, 'calendar'), eventData);
+        const docRef = await addDoc(collection(db, 'calendar'), eventData);
+        console.log('New event created with ID:', docRef.id, eventData);
         Swal.fire('Success', 'Event created successfully', 'success');
       }
       setIsModalOpen(false);
       setEditingEvent(null);
     } catch (error: any) {
+      console.error('Error saving event:', error);
       Swal.fire('Error', 'Failed to save event', 'error');
     }
   };
 
-  // Delete an event (only allowed for admin/registrar/dept head editing their own event)
   const handleDeleteEvent = async () => {
-    if (editingEvent && editingEvent.id) {
-      const confirmResult = await Swal.fire({
-        title: 'Are you sure?',
-        text: 'This will delete the event.',
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: 'Yes, delete it!',
-      });
-      if (confirmResult.isConfirmed) {
-        try {
-          await deleteDoc(doc(db, 'calendar', editingEvent.id));
-          Swal.fire('Deleted!', 'Event deleted.', 'success');
-          setIsModalOpen(false);
-          setEditingEvent(null);
-        } catch (error: any) {
-          Swal.fire('Error', 'Failed to delete event', 'error');
-        }
+    if (!editingEvent?.id) return;
+    const confirmResult = await Swal.fire({
+      title: 'Are you sure?',
+      text: 'This will delete the event.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Yes, delete it!',
+    });
+    if (confirmResult.isConfirmed) {
+      try {
+        await deleteDoc(doc(db, 'calendar', editingEvent.id));
+        console.log('Event deleted:', editingEvent.id);
+        Swal.fire('Deleted!', 'Event deleted.', 'success');
+        setIsModalOpen(false);
+        setEditingEvent(null);
+      } catch (error: any) {
+        console.error('Error deleting event:', error);
+        Swal.fire('Error', 'Failed to delete event', 'error');
       }
     }
   };
 
-  // Filter events based on currentUser for viewing:
-  // - Teachers see only global events or those in their department.
-  // - Dept heads see global events plus those for their department.
-  // - Admin/Registrar see all.
-  const filteredCalendarEvents = events.filter(ev => {
-    if (currentUser.role === 'teacher') {
-      return ev.departmentId === 'all' || ev.departmentId === '' || ev.departmentId === currentUser.departmentId;
-    }
-    if (currentUser.role === 'dept_head') {
-      return ev.departmentId === 'all' || ev.departmentId === '' || ev.departmentId === currentUser.departmentId;
-    }
-    return true;
-  }).map(getCalendarEvent);
-
-  // DataTable columns (optional view below calendar)
-  const columns = [
+  // --- 6) DataTable for events ---
+  // Only non-teachers see the DataTable view.
+  const tableColumns = [
     {
       name: 'Subject',
-      selector: (row: CalendarEvent) => row.title, // Here title holds event title
+      selector: (row: CalendarEvent) => row.title,
       sortable: true,
     },
     {
@@ -285,17 +280,32 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
       selector: (row: CalendarEvent) => (row.fullDay ? 'Full Day' : 'Half Day'),
       sortable: true,
     },
+    {
+      name: 'Department',
+      selector: (row: CalendarEvent) => row.departmentId || 'all',
+      sortable: true,
+    },
   ];
 
-  // Custom subheader toolbar for DataTable
+  // Subheader for the DataTable
   const SubHeaderComponent = () => {
     return (
       <div className="flex flex-wrap items-center gap-4">
         <button
           onClick={() => {
-            if (!editingEvent) {
-              Swal.fire('Info', 'Please click on an event in the calendar to edit', 'info');
+            if (selectedRows.length !== 1) {
+              Swal.fire('Info', 'Please select exactly one event to edit', 'info');
             } else {
+              const ev = selectedRows[0];
+              setEditingEvent(ev);
+              setEventForm({
+                title: ev.title,
+                date: ev.date,
+                fullDay: ev.fullDay,
+                startTime: ev.startTime || '',
+                endTime: ev.endTime || '',
+                departmentId: ev.departmentId,
+              });
               setIsModalOpen(true);
             }
           }}
@@ -304,8 +314,32 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
           <FontAwesomeIcon icon={faEdit} className="mr-2" /> Edit Selected
         </button>
         <button
-          onClick={() => {
-            Swal.fire('Info', 'To delete, please click on the event in the calendar and choose Delete.', 'info');
+          onClick={async () => {
+            if (selectedRows.length === 0) {
+              Swal.fire('Info', 'Please select at least one event to delete', 'info');
+              return;
+            }
+            const confirmResult = await Swal.fire({
+              title: 'Are you sure?',
+              text: 'This will delete all selected events.',
+              icon: 'warning',
+              showCancelButton: true,
+              confirmButtonText: 'Yes, delete them!',
+            });
+            if (confirmResult.isConfirmed) {
+              try {
+                await Promise.all(
+                  selectedRows.map(row =>
+                    row.id ? deleteDoc(doc(db, 'calendar', row.id)) : Promise.resolve()
+                  )
+                );
+                console.log('Bulk delete success for events:', selectedRows.map(r => r.id));
+                Swal.fire('Deleted!', 'Selected events deleted.', 'success');
+              } catch (error) {
+                console.error('Error bulk deleting events:', error);
+                Swal.fire('Error', 'Failed to delete events', 'error');
+              }
+            }
           }}
           className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition-colors"
         >
@@ -313,14 +347,14 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
         </button>
         <button
           onClick={() => {
-            if (filteredCalendarEvents.length === 0) {
+            const dataToExport = filteredEvents;
+            if (dataToExport.length === 0) {
               Swal.fire('Info', 'No events to export', 'info');
               return;
             }
-            const grouped = filteredCalendarEvents.reduce((acc: any, ev: any) => {
-              const groupKey = `${ev.extendedProps.ev.date}`;
-              if (!acc[groupKey]) acc[groupKey] = [];
-              acc[groupKey].push(ev.extendedProps.ev);
+            const grouped = dataToExport.reduce((acc: any, ev: CalendarEvent) => {
+              if (!acc[ev.date]) acc[ev.date] = [];
+              acc[ev.date].push(ev);
               return acc;
             }, {});
             const workbook = XLSX.utils.book_new();
@@ -347,11 +381,10 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
     );
   };
 
-
-  if (!ROLES[currentUser.role]?.canManageCalendar && currentUser.role !== 'teacher') {
+  if (loading) {
     return (
       <div className="p-6 bg-white rounded-xl shadow-lg">
-        <h3 className="text-red-500">You don't have permission to manage the calendar</h3>
+        <h3 className="text-gray-600">Loading calendar data...</h3>
       </div>
     );
   }
@@ -369,26 +402,44 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
             center: 'title',
             right: '',
           }}
-          events={filteredCalendarEvents}
-          dateClick={(arg) => {
-            // Only allow adding events if currentUser is not teacher
-            if (currentUser.role === 'teacher') return;
-            setEventForm({
-              title: '',
-              date: arg.dateStr,
-              fullDay: true,
-              startTime: '',
-              endTime: '',
-              departmentId: currentUser.role === 'dept_head' ? (currentUser.departmentId || '') : 'all',
-            });
-            setEditingEvent(null);
-            setIsModalOpen(true);
-          }}
+          events={calendarEvents}
+          dateClick={handleDateClick}
           eventClick={handleEventClick}
           height={600}
         />
       </div>
 
+      {/* DataTable Section: Only display if currentUser is not a teacher */}
+      {currentUser.role !== 'teacher' && (
+        <div className="bg-white rounded-xl p-6 shadow-lg">
+          <h3 className="text-xl font-bold text-primary mb-4">All Events</h3>
+          <DataTable
+            title="Events"
+            columns={tableColumns}
+            data={filteredEvents}
+            pagination
+            responsive
+            highlightOnHover
+            selectableRows
+            onSelectedRowsChange={(state) => setSelectedRows(state.selectedRows as CalendarEvent[])}
+            subHeader
+            subHeaderComponent={<SubHeaderComponent />}
+            customStyles={{
+              headCells: {
+                style: {
+                  fontWeight: 'bold',
+                  backgroundColor: '#f3f4f6',
+                },
+              },
+            }}
+            noDataComponent={
+              <div className="p-4 text-gray-500 text-center">
+                No events to display.
+              </div>
+            }
+          />
+        </div>
+      )}
 
       {/* Modal for Adding/Editing Events */}
       <AnimatePresence>
@@ -399,21 +450,29 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <motion.div className="bg-white rounded-xl p-6 w-full max-w-lg" initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}>
-              <h3 className="text-2xl font-bold mb-4">{editingEvent ? 'Edit Event' : 'Add Event'}</h3>
+            <motion.div
+              className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-lg"
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.9 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+            >
+              <h3 className="text-2xl font-bold text-primary mb-4">
+                {editingEvent ? 'Edit Event' : 'Add Event'}
+              </h3>
               <div className="grid grid-cols-1 gap-4">
                 <input
                   type="text"
                   value={eventForm.title}
                   onChange={(e) => handleFormChange('title', e.target.value)}
                   placeholder="Event Title"
-                  className="w-full p-3 border rounded-lg"
+                  className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                 />
                 <input
                   type="date"
                   value={eventForm.date}
                   onChange={(e) => handleFormChange('date', e.target.value)}
-                  className="w-full p-3 border rounded-lg"
+                  className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                 />
                 <div className="flex items-center gap-4">
                   <span className="font-medium">Full Day?</span>
@@ -436,26 +495,27 @@ export default function CalendarManagement({ currentUser }: { currentUser: Curre
                       type="time"
                       value={eventForm.startTime}
                       onChange={(e) => handleFormChange('startTime', e.target.value)}
-                      className="p-3 border rounded-lg"
+                      className="p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                     />
                     <input
                       type="time"
                       value={eventForm.endTime}
                       onChange={(e) => handleFormChange('endTime', e.target.value)}
-                      className="p-3 border rounded-lg"
+                      className="p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                     />
                   </div>
                 )}
-                {/* Department selection: for admin/registrar only */}
                 {currentUser.role !== 'dept_head' && currentUser.role !== 'teacher' && (
                   <select
                     value={eventForm.departmentId}
                     onChange={(e) => handleFormChange('departmentId', e.target.value)}
-                    className="p-3 border rounded-lg"
+                    className="p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
                   >
                     <option value="all">All Departments</option>
                     {departments.map((dept) => (
-                      <option key={dept.id} value={dept.id}>{dept.name}</option>
+                      <option key={dept.id} value={dept.id}>
+                        {dept.name}
+                      </option>
                     ))}
                   </select>
                 )}

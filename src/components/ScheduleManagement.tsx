@@ -61,16 +61,22 @@ interface Department {
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const dayOptions = daysOfWeek.map(day => ({ value: day, label: day }));
 
-// FullCalendar localizer using moment (ensure moment is configured as needed)
+// FullCalendar localizer using moment
 const localizer = moment.locale('en');
 
-export default function ScheduleManagement({ role }: { role: Role }) {
-  // States for schedules, subjects, teachers, departments, courses (for cascading), etc.
+export default function ScheduleManagement({
+  currentUserRole,
+  currentUserDepartment,
+}: {
+  currentUserRole: Role;
+  currentUserDepartment?: string;
+}) {
+  // States for schedules, subjects, teachers, departments, courses, etc.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [subjects, setSubjects] = useState<SubjectData[]>([]);
   const [teachers, setTeachers] = useState<any[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
-  const [courses, setCourses] = useState<any[]>([]); // Courses for the selected department
+  const [courses, setCourses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Cascading selection states for subject selection
@@ -86,6 +92,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     startTime: '',
     endTime: '',
   });
+
   // State for editing a schedule (single schedule entry)
   const [editSchedule, setEditSchedule] = useState<Schedule | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -127,10 +134,10 @@ export default function ScheduleManagement({ role }: { role: Role }) {
       setLoading(false);
     };
 
-    if (ROLES[role]?.canManageSchedule) {
+    if (ROLES[currentUserRole]?.canManageSchedule) {
       fetchData();
     }
-  }, [role]);
+  }, [currentUserRole]);
 
   // Real-time listener for schedules with a slight 500ms delay
   useEffect(() => {
@@ -141,6 +148,24 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     });
     return () => unsubscribe();
   }, []);
+
+  // If current user is a dept head, lock department selection to their department.
+  useEffect(() => {
+    if (currentUserRole === 'dept_head' && currentUserDepartment) {
+      setSelectedDept(currentUserDepartment);
+      // Also load courses for the locked department.
+      (async () => {
+        try {
+          const coursesSnapshot = await getDocs(
+            collection(db, `departments/${currentUserDepartment}/courses`)
+          );
+          setCourses(coursesSnapshot.docs.map(d => ({ ...d.data(), id: d.id })));
+        } catch (error) {
+          Swal.fire('Error', 'Failed to load courses', 'error');
+        }
+      })();
+    }
+  }, [currentUserRole, currentUserDepartment]);
 
   // --- Cascading Subject Selection Handlers ---
   const handleSelectedDeptChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -181,6 +206,38 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     }
   };
 
+  // --- Bulk Delete for Schedules ---
+  const handleBulkDelete = async () => {
+    if (selectedRows.length === 0) {
+      Swal.fire('Info', 'Please select at least one schedule to delete', 'info');
+      return;
+    }
+
+    const confirmResult = await Swal.fire({
+      title: 'Are you sure?',
+      text: 'This will delete all selected schedule entries.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Yes, delete them!',
+    });
+
+    if (confirmResult.isConfirmed) {
+      try {
+        await Promise.all(
+          selectedRows.map((row) => {
+            if (row.id) {
+              return deleteDoc(doc(db, 'schedules', row.id));
+            }
+            return Promise.resolve();
+          })
+        );
+        Swal.fire('Deleted!', 'Selected schedule entries deleted.', 'success');
+      } catch (error) {
+        Swal.fire('Error', 'Failed to delete one or more schedule entries', 'error');
+      }
+    }
+  };
+
   // --- Helper Functions ---
   const timeToMinutes = (timeStr: string): number => {
     const [hours, minutes] = timeStr.split(':').map(Number);
@@ -210,7 +267,6 @@ export default function ScheduleManagement({ role }: { role: Role }) {
   };
 
   // --- Optimized Schedule Creation ---
-  // For each selected day, create a separate schedule entry.
   const handleCreateSchedule = async () => {
     const { subjectId, teacherId, room, days, startTime, endTime } = newSchedule;
     if (!subjectId || !teacherId || !room || days.length === 0 || !startTime || !endTime) {
@@ -263,7 +319,10 @@ export default function ScheduleManagement({ role }: { role: Role }) {
       startTime: '',
       endTime: '',
     });
-    setSelectedDept('');
+    // Reset department if not a dept head (dept heads remain locked)
+    if (currentUserRole !== 'dept_head') {
+      setSelectedDept('');
+    }
     setSelectedCourse('');
     setCourses([]);
   };
@@ -352,7 +411,6 @@ export default function ScheduleManagement({ role }: { role: Role }) {
   };
 
   // --- FullCalendar Event Helpers ---
-  // For each schedule (with multiple days), generate an event for each day.
   const getEventsFromSchedule = (sch: Schedule) => {
     return sch.days.map(day => {
       const now = moment();
@@ -369,7 +427,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
         second: 0,
       });
       return {
-        id: sch.id, // note: multiple events may share the same id
+        id: sch.id, // Note: multiple events may share the same id
         title: `Sub: ${sch.subjectId} | Room: ${sch.room}`,
         start: eventStart.toDate(),
         end: eventEnd.toDate(),
@@ -384,9 +442,8 @@ export default function ScheduleManagement({ role }: { role: Role }) {
       openEditModal(info.event.extendedProps.sch);
     }
   };
-  // --- End FullCalendar Helpers ---
 
-  // Filtering for DataTable view
+  // --- Filtering for DataTable view ---
   const filteredSchedules = schedules.filter((sch) => {
     return (
       (!filterDepartment || sch.departmentId === filterDepartment) &&
@@ -448,14 +505,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
           <FontAwesomeIcon icon={faEdit} className="mr-2" /> Edit Selected
         </button>
         <button
-          onClick={() => {
-            if (selectedRows.length === 0) {
-              Swal.fire('Info', 'Please select at least one schedule to delete', 'info');
-            } else {
-              const ids = selectedRows.map((row: Schedule) => row.id) as string[];
-              ids.forEach((id) => handleDeleteSchedule(id));
-            }
-          }}
+          onClick={handleBulkDelete}
           className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition-colors"
         >
           <FontAwesomeIcon icon={faTrash} className="mr-2" /> Delete Selected
@@ -501,7 +551,7 @@ export default function ScheduleManagement({ role }: { role: Role }) {
     setSelectedRows(state.selectedRows);
   };
 
-  if (!ROLES[role]?.canManageSchedule) {
+  if (!ROLES[currentUserRole]?.canManageSchedule) {
     return (
       <div className="p-6 bg-white rounded-xl shadow-lg">
         <h3 className="text-red-500">You don't have permission to manage schedules</h3>
@@ -516,18 +566,32 @@ export default function ScheduleManagement({ role }: { role: Role }) {
         <h2 className="text-2xl font-bold text-primary mb-4">Add Schedule</h2>
         {/* Cascading subject selection: Department -> Course -> Subject */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <select
-            value={selectedDept}
-            onChange={handleSelectedDeptChange}
-            className="p-3 border rounded-lg"
-          >
-            <option value="">Select Department</option>
-            {departments.map((dept) => (
-              <option key={dept.id} value={dept.id}>
-                {dept.name}
+          {currentUserRole === 'dept_head' && currentUserDepartment ? (
+            <select
+              value={currentUserDepartment}
+              disabled
+              className="p-3 border rounded-lg"
+            >
+              <option value={currentUserDepartment}>
+                {currentUserDepartment === 'non_board_courses'
+                  ? 'Non Board Courses'
+                  : 'Board Courses'}
               </option>
-            ))}
-          </select>
+            </select>
+          ) : (
+            <select
+              value={selectedDept}
+              onChange={handleSelectedDeptChange}
+              className="p-3 border rounded-lg"
+            >
+              <option value="">Select Department</option>
+              {departments.map((dept) => (
+                <option key={dept.id} value={dept.id}>
+                  {dept.name}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             value={selectedCourse}
             onChange={handleSelectedCourseChange}
@@ -657,17 +721,27 @@ export default function ScheduleManagement({ role }: { role: Role }) {
       <div className="bg-white rounded-xl p-6 shadow-lg">
         <div className="mb-4 flex flex-wrap items-center gap-4">
           <h3 className="text-xl font-semibold text-primary">Filter Schedules:</h3>
-          <select
-            value={filterDepartment}
-            onChange={(e) => setFilterDepartment(e.target.value)}
-            className="p-2 border rounded"
-          >
-            <option value="">All Departments</option>
-            {Array.from(new Set(subjects.map(sub => sub.departmentId))).map((deptId) => {
-              const dept = departments.find((d: Department) => d.id === deptId);
-              return <option key={deptId} value={deptId}>{dept ? dept.name : 'N/A'}</option>;
-            })}
-          </select>
+          {currentUserRole === 'dept_head' && currentUserDepartment ? (
+            <select value={currentUserDepartment} disabled className="p-2 border rounded">
+              <option value={currentUserDepartment}>
+                {currentUserDepartment === 'non_board_courses'
+                  ? 'Non Board Courses'
+                  : 'Board Courses'}
+              </option>
+            </select>
+          ) : (
+            <select
+              value={filterDepartment}
+              onChange={(e) => setFilterDepartment(e.target.value)}
+              className="p-2 border rounded"
+            >
+              <option value="">All Departments</option>
+              {Array.from(new Set(subjects.map(sub => sub.departmentId))).map((deptId) => {
+                const dept = departments.find((d: Department) => d.id === deptId);
+                return <option key={deptId} value={deptId}>{dept ? dept.name : 'N/A'}</option>;
+              })}
+            </select>
+          )}
           <select
             value={filterRole}
             onChange={(e) => setFilterRole(e.target.value)}
